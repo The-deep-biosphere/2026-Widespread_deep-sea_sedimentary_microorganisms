@@ -6,7 +6,7 @@ This repository contains the scripts and files needed to reproduce the plots pro
 The scripts were run in the order of the file numbering in each folder, starting with 1)Preprocessing/1)FastQ_to_OTUtable continued by 1)Preprocessing/2)OTUtable_finalization/ etc.
 
 ## Data
-- Sequencing data of all the studies (be aware to cite the other studies the data belongs to) used are in: PRJNA784957, PRJEB102573, PRJNA529480, PRJNA789780, PRJNA590088, PRJNA473406, PRJNA473406, PRJNA489438, PRJDB8106, PRJEB33873, PRJNA606622.
+- Sequencing data of all the studies (be aware to cite the other studies the data was published by) used are in: PRJNA784957, PRJEB102573, PRJNA529480, PRJNA789780, PRJNA590088, PRJNA473406, PRJNA473406, PRJNA489438, PRJDB8106, PRJEB33873, PRJNA606622.
   - The processed data of all the studies are available in the folder 1)Preprocessing/2)OTUtable_finalization/. The OTU tables are sorted based on the abbreviations used in this study.
 - The chemical data of all studies combined can be found in 1)Preprocessing/4)Significant_gene/All_MICROB_GEO_data.csv. All the data has the unit millimolar (mM), where the depth is in cm.
 - The chemical data of this study is available on PANGAEA: https://doi.pangaea.de/10.1594/PANGAEA.990258 and https://doi.pangaea.de/10.1594/PANGAEA.990499.
