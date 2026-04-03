@@ -1,7 +1,7 @@
 # Widespread deep-sea microorganisms in subseafloor geochemical cycling
 #### R.L. Hageman, S. le Moine-Bauer, I. H. Thorseth, J. Brendryen, T. E. Møller,  R. Böröcz, H. R. Babel, B. Hannisdal, and S.L. Jørgensen
 
-This repository contains the scripts and files needed to reproduce the plots provided in the article [Link soon available].
+This repository contains the scripts and files needed to reproduce the plots provided in the [article](https://www.frontiersin.org/journals/microbiology/articles/10.3389/fmicb.2026.1790163/abstract).
 
 The scripts were run in the order of the file numbering in each folder, starting with 1)Preprocessing/1)FastQ_to_OTUtable continued by 1)Preprocessing/2)OTUtable_finalization/ etc.
 
