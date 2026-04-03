@@ -11,17 +11,18 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import math
-import random
 import composition_stats as cs
 import os
 
 # sklearn imports 
 from sklearn.metrics import mean_absolute_error,mean_squared_error
-from sklearn import model_selection
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.tree import _tree
 from sklearn.metrics import confusion_matrix
 from sklearn.tree import DecisionTreeClassifier
+
+# area- and core-stratified splitting, nested feature selection, validation tuning
+from core_split import AREA_CORES, area_core_split, downsample_core, select_features, fit_tuned_tree
 
 # =============================================
 # ---------- EXPORT in Rules Format -----------
@@ -110,8 +111,7 @@ def DT_Features(rules):
         # write every key and value to file
         w.append([key, val])
 
-    w = pd.DataFrame(w)
-    w.columns = ['OTU','value']
+    w = pd.DataFrame(w, columns=['OTU','value'])   # also valid when no OTU is found
     # sort on descending order
     # sort = pd.read_csv(name, names=['OTU','value'])
     sort = w.sort_values(by='value', ascending=False)
@@ -190,8 +190,7 @@ def DT_features_threshold(rules, threshold):
         # write every key and value to file
         w.append([key, val])
 
-    w = pd.DataFrame(w)
-    w.columns = ['OTU','value']
+    w = pd.DataFrame(w, columns=['OTU','value'])   # also valid when no OTU is found
     # sort on descending order
     # sort = pd.read_csv(name, names=['OTU','value'])
     sort_high = w.sort_values(by='value', ascending=False)
@@ -211,8 +210,7 @@ def DT_features_threshold(rules, threshold):
         # write every key and value to file
         w.append([key, val])
 
-    w = pd.DataFrame(w)
-    w.columns = ['OTU','value']
+    w = pd.DataFrame(w, columns=['OTU','value'])   # also valid when no OTU is found
     # sort on descending order
     # sort = pd.read_csv(name, names=['OTU','value'])
     sort_low = w.sort_values(by='value', ascending=False)
@@ -221,10 +219,7 @@ def DT_features_threshold(rules, threshold):
 
 def Data_Extraction (Cores_selection, All_cores, X, y):
         
-        data = np.where(All_cores == Cores_selection[0])[0]
-        for i in Cores_selection[1:]:
-            if i in All_cores:
-                data = np.concatenate([data,np.where(All_cores == i)[0]])
+        data = np.where(np.isin(All_cores, Cores_selection))[0]
 
         X_selection = X[data,:]
         y_selection = y[data]
@@ -257,12 +252,15 @@ def AP_division(y, y_pred, threshold, perc_absent, number_AMOR_absent, perc_pres
     loc_high = np.where(real == 1)
     loc_low = np.where(real == 0)
 
+    # append the result of this iteration to the lists of earlier iterations
     number_present = np.sum(real == 1)
-    perc_present = np.sum(pred[loc_high] == 1)/number_present*100
+    perc_present.append(np.sum(pred[loc_high] == 1)/number_present*100 if number_present > 0 else float('nan'))
+    number_AMOR_present.append(number_present)
     number_absent = np.sum(real == 0)
-    perc_absent = np.sum(pred[loc_low] == 0)/number_absent*100
+    perc_absent.append(np.sum(pred[loc_low] == 0)/number_absent*100 if number_absent > 0 else float('nan'))
+    number_AMOR_absent.append(number_absent)
 
-    return perc_absent, number_absent, perc_present, number_present, loc_low, loc_high
+    return perc_absent, number_AMOR_absent, perc_present, number_AMOR_present, loc_low, loc_high
 
 def AP_renaming(X,y,name):
     Y_pred = dtree_sklearn.predict(X)
@@ -296,7 +294,8 @@ rule_features_low = []
 variables = ['oxygen','nitrate','ammonium','manganese']
 
 dic_name = {'oxygen':'O2conc', 'nitrate':'NO3conc','ammonium':'NH4conc','manganese':'Mnconc'}
-dic_loc = {'oxygen':2, 'nitrate':3,'manganese':7,'ammonium':5,'Depth':1,'Core':0}
+# chemical columns used for the significant-OTU selection (as in 4.5)Significant_genes.py)
+var_columns = ['O2conc','NO3conc','Mnconc','NH4conc']
 
 zero_values = True
 fact = 10
@@ -323,8 +322,13 @@ for var in variables:
     data.columns = data.columns.str.replace(data.columns[0], 'Core')
     data['Core'] = data['Core'].astype(float).astype(int)
 
+    otu_columns = [c for c in data.columns if c.startswith('OTU_')]
+    # all samples (every chemical) of the cores of interest, used for the feature selection
+    data_fs = data[~data['Core'].isin([18, 19, 21, 22])].copy()
+    data_fs[var_columns + otu_columns] = data_fs[var_columns + otu_columns].astype(float)
+
     if zero_values == False:
-        zeros = data.iloc[:,dic_loc[var]].values.astype(float) != 0
+        zeros = data[dic_name[var]].values.astype(float) != 0
         data = data.iloc[zeros,:]
     data = data.dropna(subset = [dic_name[var]], how ='any') 
 
@@ -338,7 +342,7 @@ for var in variables:
     data.reset_index(drop=True, inplace=True)
 
     # Change to CLR
-    y_tot = data.iloc[:,dic_loc[var]].values.astype(float)*1000
+    y_tot = data[dic_name[var]].values.astype(float)*1000
     y_tot_clr = cs.clr(np.array(y_tot+0.00001))
     data['y'] = (y_tot_clr*fact).astype(int)
     loc_y = data.columns.get_loc('y')
@@ -346,19 +350,19 @@ for var in variables:
     # Get CLR threshold
     if var == 'nitrate':
         threshold = 5
-        val = (data.iloc[:, dic_loc[var]].values.astype(float)*1000).astype(int) == threshold
+        val = (data[dic_name[var]].values.astype(float)*1000).astype(int) == threshold
         threshold = data.iloc[val,loc_y].values[0]
     if var == 'oxygen':
         threshold = 5
-        val = (data.iloc[:, dic_loc[var]].values.astype(float)*1000).astype(int) == threshold
+        val = (data[dic_name[var]].values.astype(float)*1000).astype(int) == threshold
         threshold = data.iloc[val,loc_y].values[0]
     if var == 'manganese':
         threshold = 0
-        val = (data.iloc[:, dic_loc[var]].values.astype(float)*1000).astype(int) == threshold
+        val = (data[dic_name[var]].values.astype(float)*1000).astype(int) == threshold
         threshold = data.iloc[val,loc_y].values[0]
     if var == 'ammonium':
         threshold = 5
-        val = (data.iloc[:, dic_loc[var]].values.astype(float)*1000).astype(int) == threshold
+        val = (data[dic_name[var]].values.astype(float)*1000).astype(int) == threshold
         threshold = data.iloc[val,loc_y].values[0]
 
 
@@ -367,76 +371,22 @@ for var in variables:
     # ==================================================
     # predictor_loc = np.where(data.columns == 'zonation')[0][0]
 
-    # load significant features tested using Storey's q-value
-    feature_selection1 = np.array(pd.read_csv(os.getcwd()+'/../1)Preprocessing/4)Significant_gene/Significant_Features_FAMILY_comparison_AMOR_WNAG_MAR_SCS_NWPO_SPO_oxygen.csv',header=None))
-    feature_selection2 = np.array(pd.read_csv(os.getcwd()+'/../1)Preprocessing/4)Significant_gene/Significant_Features_FAMILY_comparison_AMOR_WNAG_MAR_SCS_NWPO_SPO_nitrate.csv',header=None))
-    feature_selection3 = np.array(pd.read_csv(os.getcwd()+'/../1)Preprocessing/4)Significant_gene/Significant_Features_FAMILY_comparison_AMOR_WNAG_MAR_SCS_NWPO_SPO_manganese.csv',header=None))
-    feature_selection4 = np.array(pd.read_csv(os.getcwd()+'/../1)Preprocessing/4)Significant_gene/Significant_Features_FAMILY_comparison_AMOR_WNAG_MAR_SCS_NWPO_SPO_ammonium.csv',header=None))
-
-    feature_selection = np.concatenate([feature_selection1,feature_selection2,feature_selection3,feature_selection4])
-    feature_selection = np.unique(feature_selection)
-
-    loc = []
-    for i in range(len(feature_selection)):
-        
-        condition = data.columns == feature_selection[i]
-        selection = np.where(condition)
-        
-        if len(selection[0]) == 1:
-            loc.append(selection[0][0])
-
-    print('Feature selection was all present in dataset: '+ str(len(feature_selection)==len(loc)))
-
-    # feature selection procedure completion
-    # --------------------------------------
-    feature_selection = data.columns[loc]
-
-    # ============================
-    # --- Look up taxa names ----
-    #============================
-
-    lvl = 'FAMILY'
-    TAX = pd.read_csv(os.getcwd()+"/../1)Preprocessing/3)Merge_OTUtables/TAXtable_merged_family.csv")
-    features = [np.array(TAX[TAX.iloc[:,0]==OTU][lvl])[0] for OTU in feature_selection]
-
-    feature_names_order = [x.strip() for x in features]
-
-    # # ===================================
-    # # ---------- BALANCE DATA -----------
-    # # ===================================
-
-    # core GS19GC10 (core == 17) represent the dataset the most (207 sample of 658)
-    # here I will separate part of the data
-    # take 2/3 of the data
-
-    list_GS19GC10 = data[data['Core'] == 17].index
-    list_random = []
-    for i in range(int(list_GS19GC10.shape[0]/4)):
-        list_random.append(random.choice(list_GS19GC10))
-   
-    X_seperation = data.iloc[list_random,loc].values.astype(float)
-    y_seperation = data.iloc[list_random,loc_y]*fact
-    y_seperation = y_seperation.astype(int)
-    core_seperation = np.array(data.iloc[list_random]['Core'])
-    
     # ===================================
     # Assigning X and Y variables ARCTIC
     # ===================================
-    data_temp = data.drop(list_random)
-    data_temp.reset_index(drop=True, inplace=True)
-
-    #Extracting Independent and dependent Variable  
-    X = data_temp.iloc[:, loc].values.astype(float)
-    y = data_temp.iloc[:,loc_y]
-    core = np.array(data_temp['Core'])
+    # the significant OTUs are selected inside every iteration from the
+    # training cores only (see SPLIT DATA below)
+    X_all = data[otu_columns]
+    y = data.iloc[:,loc_y].values
+    core = np.array(data['Core'])
 
     # ===================================
     # Resample making equal groups
     # ===================================
-    colour_code = np.array(data_temp.Core)
+    colour_code = np.array(data.Core)
     colour_label = {0:'AMOR',1:"Pacific",2:'Atlantic',3:'North Pond',4:'SCS',5:'SPO'}
 
-    for i,c in enumerate(data_temp.Core):
+    for i,c in enumerate(data.Core):
         # AMOR
         if c <= 25:
             colour_code[i] = 0
@@ -493,31 +443,36 @@ for var in variables:
     number_SPO_absent = []
     number_SPO_present = []
 
+    splits = []
     for it in range(iterations):
 
         # =================================
         # ---------- SPLIT DATA -----------
         # =================================
 
-        seed = 651                    # Fix random seed for reproducibility
-        # Shuffle and split the data into train and a 
-        # concatenation of validation and test sets with a ratio of 0.7/0.3
-        X_train, X_test, y_train, y_test, core_train, core_test = model_selection.train_test_split(
-            X, y, core, #y_zonation,, y_zonation_train, y_zonation_test
-            test_size=0.3, shuffle=True, random_state=seed
-        )
+        seed = 651 + it               # new, reproducible split in every iteration
+        # train / validation / test split (0.7/0.15/0.15 of the cores),
+        # stratified on area and then on core: a core is in only one set
+        train_idx, val_idx, test_idx = area_core_split(core, seed)
 
-        X_test = np.vstack([X_test, X_seperation])
-        y_test = np.append(y_test, y_seperation)
-        core_test = np.append(core_test,core_seperation)
+        # core GS19GC10 (core == 17) represents the dataset the most (207 samples);
+        # remove 1/4 of its samples from the training set to reduce its weight
+        train_idx = downsample_core(train_idx, core, seed)
+
+        # load significant features tested using Storey's q-value, computed on the training cores only
+        feature_selection = select_features(data_fs, np.unique(core[train_idx]), var_columns,
+                                            otu_columns, seed, clr=False)
+        X = X_all[feature_selection].values.astype(float)
+        # the classification below re-uses the same splits and features
+        splits.append((train_idx, val_idx, test_idx, feature_selection))
+
+        X_train, y_train = X[train_idx], y[train_idx]
+        X_val, y_val = X[val_idx], y[val_idx]
+        X_test, y_test, core_test = X[test_idx], y[test_idx], core[test_idx]
         
         # Classifier presence/absence based on threshold
         y_zonation_test = np.array(zonation(y_test,threshold))
         y_zonation_train = np.array(zonation(y_train,threshold))
-
-        sum(core==17)/X.shape[0]
-        sum(core_train==17)/X_train.shape[0]
-        sum(core_test==17)/X_test.shape[0]
 
 
         # ===========================================
@@ -528,11 +483,9 @@ for var in variables:
         # Test choosen model on test dataset
         # ------------------------------------
 
-        alpha = 0
-        max_dep = 100
-
-        dtree_sklearn = DecisionTreeRegressor(max_depth=max_dep, ccp_alpha=alpha)
-        dtree_sklearn.fit(X_train,y_train)  
+        # max_depth is chosen on the validation cores (ccp_alpha = 0 as before)
+        dtree_sklearn = fit_tuned_tree(DecisionTreeRegressor(ccp_alpha=0, random_state=seed),
+                                       X_train, y_train, X_val, y_val)
 
 
         print("============ Train data ============")
@@ -570,14 +523,14 @@ for var in variables:
 
         # store NWPO in another variable
         # and remove 26 - 39 from test Data
-        NWPO = np.arange(26,40)      
+        NWPO = AREA_CORES['NWPO']
         X_NWPO, y_NWPO = Data_Extraction(NWPO, core_test, X_test, y_test)
 
         # -- ATLANTIC --
         # --------------
 
         # store WNAG in another variable (40)
-        WNAG_data = np.array([40,41,42])
+        WNAG_data = AREA_CORES['WNAG']
         X_WNAG, y_WNAG = Data_Extraction(WNAG_data, core_test, X_test, y_test)
 
         # --------------
@@ -585,7 +538,7 @@ for var in variables:
         # --------------
 
         # store north pond in another variable (43 and 44)
-        MAR_data = np.array([43,44])
+        MAR_data = AREA_CORES['MAR']
         X_MAR, y_MAR = Data_Extraction(MAR_data, core_test, X_test, y_test)
 
         # --------------
@@ -593,7 +546,7 @@ for var in variables:
         # --------------
 
         # store south china sea in another variable (45 up to 54)
-        SCS = np.arange(45,55)
+        SCS = AREA_CORES['SCS']
         X_SCS, y_SCS = Data_Extraction(SCS, core_test, X_test, y_test)
 
         # --------------
@@ -601,14 +554,14 @@ for var in variables:
         # --------------
 
         # store South Pacific Ocean in another variable (55 up to 67)
-        SPO = np.arange(55,68) # 63 if you want to omit Atacama
+        SPO = AREA_CORES['SPO'] # cores >= 63 are Atacama
         X_SPO, y_SPO = Data_Extraction(SPO, core_test, X_test, y_test)
 
         # --------------
         # ---- AMOR ----
         # --------------
 
-        AMOR = np.arange(1,26)
+        AMOR = AREA_CORES['AMOR']
         X_AMOR, y_AMOR = Data_Extraction(AMOR, core_test, X_test, y_test)
 
     
@@ -818,65 +771,45 @@ for var in variables:
     # =====================================
 
 
-    # store pacific in another variable
-    # and remove 26 - 39 from test Data
-    NWPO = np.arange(27,40)
-
-    NWPO_data = np.where(core_test == 26)[0]
-    for core in NWPO:
-        if core in core_test:
-            NWPO_data = np.concatenate([NWPO_data,np.where(core_test == core)[0]])
-
-    X_NWPO = X_test[NWPO_data,:]
-    y_NWPO = y_zonation_test[NWPO_data]
-
-    # store atlantic in another variable (40)
-    WNAG_data = np.where((core_test == 40) | (core_test == 41) | (core_test == 42))[0]
-    X_WNAG = X_test[WNAG_data,:]
-    y_WNAG = y_zonation_test[WNAG_data]
-
-    # store north pond in another variable (41 and 42)
-    NP_data = np.where((core_test == 43) | (core_test == 44))[0]
-    X_NP = X_test[NP_data,:]
-    y_NP = y_zonation_test[NP_data]
-
-    # store south china sea in another variable (45 up to 54)
-    SCS = np.arange(46,55)
-
-    SCS_data = np.where(core_test == 45)[0]
-    for core in SCS:
-        if core in core_test:
-            SCS_data = np.concatenate([SCS_data,np.where(core_test == core)[0]])
-
-    X_SCS = X_test[SCS_data,:]
-    y_SCS = y_zonation_test[SCS_data]
-
-    # store South Pacific Ocean in another variable (55 up to 67)
-    SPO = np.arange(56,68)
-
-    SPO_data = np.where(core_test == 55)[0]
-    for core in SPO:
-        if core in core_test:
-            SPO_data = np.concatenate([SPO_data,np.where(core_test == core)[0]])
-
-    X_SPO = X_test[SPO_data,:]
-    y_SPO = y_zonation_test[SPO_data]
-
-    # AMOR
-    AMOR = np.arange(2,26)
-    AMOR_data = np.where(core_test == 1)[0]
-
-    for core in AMOR:
-        if core in core_test:
-            AMOR_data = np.concatenate([AMOR_data,np.where(core_test == core)[0]])
-
-
-    X_AMOR = X_test[AMOR_data,:]
-    y_AMOR = y_zonation_test[AMOR_data]
-
-    y_AMOR1 = y_zonation_test[AMOR_data]
+    cm_iterations = []   # confusion-matrix based accuracy of every iteration
+    # rule frequencies of this chemical, counted over all iterations of this run
+    rule_features, rule_features_high, rule_features_low = [], [], []
 
     for it in range(iterations):
+        # same train / validation / test cores and features as the regression
+        train_idx, val_idx, test_idx, feature_selection = splits[it]
+        seed = 651 + it
+        X = X_all[feature_selection].values.astype(float)
+        X_train, y_zonation_train = X[train_idx], np.array(zonation(y[train_idx],threshold))
+        X_val, y_zonation_val = X[val_idx], np.array(zonation(y[val_idx],threshold))
+        X_test, y_zonation_test, core_test = X[test_idx], np.array(zonation(y[test_idx],threshold)), core[test_idx]
+
+        # store every area of the test cores in another variable
+        NWPO_data = np.where(np.isin(core_test, AREA_CORES['NWPO']))[0]
+        X_NWPO = X_test[NWPO_data,:]
+        y_NWPO = y_zonation_test[NWPO_data]
+
+        WNAG_data = np.where(np.isin(core_test, AREA_CORES['WNAG']))[0]
+        X_WNAG = X_test[WNAG_data,:]
+        y_WNAG = y_zonation_test[WNAG_data]
+
+        # north pond (MAR)
+        NP_data = np.where(np.isin(core_test, AREA_CORES['MAR']))[0]
+        X_NP = X_test[NP_data,:]
+        y_NP = y_zonation_test[NP_data]
+
+        SCS_data = np.where(np.isin(core_test, AREA_CORES['SCS']))[0]
+        X_SCS = X_test[SCS_data,:]
+        y_SCS = y_zonation_test[SCS_data]
+
+        SPO_data = np.where(np.isin(core_test, AREA_CORES['SPO']))[0]
+        X_SPO = X_test[SPO_data,:]
+        y_SPO = y_zonation_test[SPO_data]
+
+        AMOR_data = np.where(np.isin(core_test, AREA_CORES['AMOR']))[0]
+        X_AMOR = X_test[AMOR_data,:]
+        y_AMOR = y_zonation_test[AMOR_data]
+
         # ===========================================
         # ---------- TRAIN AND TEST MODEL -----------
         # ===========================================
@@ -884,11 +817,9 @@ for var in variables:
         # ------------------------------------
         # Test choosen model on test dataset
         # ------------------------------------
-        alpha = 0
-        max_dep = 500
-
-        dtree_sklearn = DecisionTreeClassifier(criterion='gini', max_depth=max_dep, ccp_alpha=alpha)
-        dtree_sklearn.fit(X_train,y_zonation_train)  
+        # max_depth is chosen on the validation cores (ccp_alpha = 0 as before)
+        dtree_sklearn = fit_tuned_tree(DecisionTreeClassifier(criterion='gini', ccp_alpha=0, random_state=seed),
+                                       X_train, y_zonation_train, X_val, y_zonation_val)
 
         print("============ Train data ============")
         y_pred_train = dtree_sklearn.predict(X_train)
@@ -909,26 +840,6 @@ for var in variables:
             h, l = DT_features_threshold(rules, 0)
             rule_features_high, rule_features_low = pd.concat([rule_features_high,h]), pd.concat([rule_features_low,l])
     
-        # save rules
-        name = ['general','high','low']
-        for n,i in enumerate([rule_features,rule_features_high,rule_features_low]):
-            rule_features2 = i.groupby(["OTU"]).sum()
-            rule_features2 = rule_features2.sort_values(by='value', ascending=False)
-            rule_features2 = rule_features2.reset_index()
-
-            # Load formerly formed rules
-            existing_rules = pd.read_csv(os.getcwd()+f'/rules_extract/feature_frequency_rules_{var}_{name[n]}.csv')
-            existing_rules.columns = existing_rules.columns.str.replace(existing_rules.columns[0], 'OTU')
-
-            # merge with new rules
-            rule_features3 = pd.concat([rule_features2, existing_rules])
-            rule_features3 = rule_features3.groupby(["OTU"]).sum()
-            rule_features3 = rule_features3.sort_values(by='value', ascending=False)
-            rule_features3 = rule_features3.reset_index()
-
-            # save new rules set
-            np.savetxt(os.getcwd()+f'/rules_extract/feature_frequency_rules_{var}_{name[n]}.csv', rule_features3, delimiter=",", fmt="%s",header = 'OTU,value')
-
 
         # ===================
         # RENAMING OUTPUT
@@ -1000,29 +911,32 @@ for var in variables:
         # df_concat.groupby(['A', 'B']).mean()
         # df_concat = df_concat.groupby(df_concat.index)
 
-        if var == 'oxygen':
-            if it == 0:
-                DTC_class_O2 = cm
-            else:
-                DTC_class_O2 = (DTC_class_O2+cm)/2
+        cm_iterations.append(cm)
 
-        if var == 'nitrate':
-            if it == 0:
-                DTC_class_NO3 = cm
-            else:
-                DTC_class_NO3 = (DTC_class_NO3+cm)/2
+    # save the OTU frequencies in the rules of all classification trees of this run
+    # (own file names: the regression trees of continuous_prediction_errordistr.py
+    # write feature_frequency_rules_{var}_*.csv)
+    name = ['general','high','low']
+    for n,i in enumerate([rule_features,rule_features_high,rule_features_low]):
+        rule_features2 = i.groupby(["OTU"]).sum()
+        rule_features2 = rule_features2.sort_values(by='value', ascending=False)
+        rule_features2 = rule_features2.reset_index()
+        np.savetxt(os.getcwd()+f'/rules_extract/feature_frequency_rules_classifier_{var}_{name[n]}.csv', rule_features2, delimiter=",", fmt="%s",header = 'OTU,value')
 
-        if var == 'ammonium':
-            if it == 0:
-                DTC_class_NH4 = cm
-            else:
-                DTC_class_NH4 = (DTC_class_NH4+cm)/2
+    # mean over the iterations (areas/classes without test samples are ignored)
+    DTC_class = pd.concat(cm_iterations).groupby(level=0, sort=False).mean()
 
-        if var == 'manganese':
-            if it == 0:
-                DTC_class_Mn = cm
-            else:
-                DTC_class_Mn = (DTC_class_Mn+cm)/2
+    if var == 'oxygen':
+        DTC_class_O2 = DTC_class
+
+    if var == 'nitrate':
+        DTC_class_NO3 = DTC_class
+
+    if var == 'ammonium':
+        DTC_class_NH4 = DTC_class
+
+    if var == 'manganese':
+        DTC_class_Mn = DTC_class
 
 
 DTC_presence_O2,DTC_presence_NOx,DTC_presence_NH4,DTC_presence_Mn = [], [], [], []
@@ -1154,7 +1068,7 @@ wspace=1.0)
 # # plt.savefig('DT_regressor_results2.png')
 # plt.tight_layout()
 
-plt.savefig(os.getcwd()+f'DT_comparison_{iterations}it.png')
+plt.savefig(os.getcwd()+f'/DT_comparison_{iterations}it.png')
 
 plt.show()
 

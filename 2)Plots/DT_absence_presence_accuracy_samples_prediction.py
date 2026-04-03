@@ -5,14 +5,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D 
-import random
 import os
 
-# sklearn imports 
+# sklearn imports
 from sklearn.metrics import accuracy_score,confusion_matrix
-from sklearn import model_selection
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.tree import _tree
+
+# area- and core-stratified splitting, nested feature selection, validation tuning
+from core_split import AREA_CORES, area_core_split, downsample_core, select_features, fit_tuned_tree
 
 # =============================================
 # ---------- EXPORT in Rules Format -----------
@@ -160,6 +161,22 @@ number_SCS_abs = np.array(accuracy)
 number_SPO_pres = np.array(accuracy)
 number_SPO_abs = np.array(accuracy)
 
+# chemical columns used for the significant-OTU selection (as in 4.5)Significant_genes.py)
+var_columns = ['O2conc','NOxconc','Mnconc','NH4conc']
+iterations = 1000
+
+# per area: (accuracy absent, accuracy present, number absent, number present)
+results_arrays = {'AMOR': (accuracy_AMOR_abs, accuracy_AMOR_pres, number_AMOR_abs, number_AMOR_pres),
+                  'WNAG': (accuracy_WNAG_abs, accuracy_WNAG_pres, number_WNAG_abs, number_WNAG_pres),
+                  'MAR':  (accuracy_MAR_abs,  accuracy_MAR_pres,  number_MAR_abs,  number_MAR_pres),
+                  'NWPO': (accuracy_NWPO_abs, accuracy_NWPO_pres, number_NWPO_abs, number_NWPO_pres),
+                  'SCS':  (accuracy_SCS_abs,  accuracy_SCS_pres,  number_SCS_abs,  number_SCS_pres),
+                  'SPO':  (accuracy_SPO_abs,  accuracy_SPO_pres,  number_SPO_abs,  number_SPO_pres)}
+
+def nanmean_or_nan(values):
+    values = np.array(values, dtype=float)
+    return float('nan') if np.all(np.isnan(values)) else np.nanmean(values)
+
 for i, var in enumerate(variables):
 
     for j, thres in enumerate(thresholds):
@@ -178,6 +195,8 @@ for i, var in enumerate(variables):
         # data.reset_index(drop=True, inplace=True)
         data = data.astype(float)
         data['Core'] = data['Core'].astype(int)
+        # all samples (every chemical) of the cores of interest, used for the feature selection
+        data_fs = data[~data['Core'].isin([18, 19, 21, 22])]
         data = data.dropna(subset = [var], how ='any')
         data.reset_index(drop=True, inplace=True) 
         data['zonation'] = zonation(data[var].values,thres)
@@ -197,279 +216,67 @@ for i, var in enumerate(variables):
 
         data.reset_index(drop=True, inplace=True)
 
-        # select relevant features according to q-value
-        # # ------------------------------------------------------
-        feature_selection1 = np.array(pd.read_csv(os.getcwd()+'/../1)Preprocessing/4)Significant_gene/Significant_Features_FAMILY_comparison_AMOR_WNAG_MAR_SCS_NWPO_SPO_oxygen.csv',header=None))
-        feature_selection2 = np.array(pd.read_csv(os.getcwd()+'/../1)Preprocessing/4)Significant_gene/Significant_Features_FAMILY_comparison_AMOR_WNAG_MAR_SCS_NWPO_SPO_nitrate.csv',header=None))
-        feature_selection3 = np.array(pd.read_csv(os.getcwd()+'/../1)Preprocessing/4)Significant_gene/Significant_Features_FAMILY_comparison_AMOR_WNAG_MAR_SCS_NWPO_SPO_manganese.csv',header=None))
-        feature_selection4 = np.array(pd.read_csv(os.getcwd()+'/../1)Preprocessing/4)Significant_gene/Significant_Features_FAMILY_comparison_AMOR_WNAG_MAR_SCS_NWPO_SPO_ammonium.csv',header=None))
-
-        feature_selection = np.concatenate([feature_selection1,feature_selection2,feature_selection3,feature_selection4])
-        feature_selection = np.unique(feature_selection)
-
-        loc = []
-        for f in range(len(feature_selection)):
-            
-            condition = data.columns == feature_selection[f]
-            selection = np.where(condition)
-            loc.append(selection[0][0])
-
-        print('Feature selection was all present in dataset: '+ str(len(feature_selection)==len(loc)))
-
-        # feature selection procedure completion
-        # --------------------------------------
-        feature_selection = data.columns[loc]
-
-        # ============================
-        # ---- Look up taxa ----
-        #============================
-
-        lvl = 'FAMILY'
-        TAX = pd.read_csv(os.getcwd()+"/../1)Preprocessing/3)Merge_OTUtables/TAXtable_merged_family.csv")
-        features = [np.array(TAX[TAX.iloc[:,0]==OTU][lvl])[0] for OTU in feature_selection]
-
-        feature_names_order = [x.strip() for x in features]
-        len(feature_names_order)
-
-        # ===================================
-        # ---------- BALANCE DATA -----------
-        # ===================================
-
-        # core GS19GC10 (core == 17) represent the dataset the most (207 sample of 658)
-        # here I will separate part of the data
-        # take 2/3 of the data
-        data.reset_index(drop=True, inplace=True)
-
-        list_GS19GC10 = data[data['Core'] == 17].index
-        list_random = []
-        for c in range(int(list_GS19GC10.shape[0]/4)):
-            list_random.append(random.choice(list_GS19GC10))
-
-        X_seperation = data.iloc[list_random,loc].values.astype(float)
-        y_seperation = data.iloc[list_random,predictor_loc]
-        y_seperation = np.array(y_seperation)
-        core_seperation = np.array(data.iloc[list_random]['Core'])
-
         # ================================
         # Assigning X and Y variables 
         # ================================
-        data_temp = data.drop(list_random)
-        data_temp.reset_index(drop=True, inplace=True)
+        otu_columns = [c for c in data.columns if c.startswith('OTU_')]
+        X_all = data[otu_columns]
+        y = np.array(data.iloc[:, predictor_loc])
+        core = np.array(data['Core'])
 
-        #Extracting Independent and dependent Variable  
-        X = data_temp.iloc[:, loc].values.astype(float)
-        y = data_temp.iloc[:, predictor_loc]
-        y = np.array(y)
-        core = np.array(data_temp['Core'])
-
-
-        # =================================
-        # ---------- SPLIT DATA -----------
-        # =================================
-
-        seed = 650                    # Fix random seed for reproducibility
-        # Shuffle and split the data into train and a 
-        # concatenation of validation and test sets with a ratio of 0.7/0.3
-        X_train, X_test, y_train, y_test, core_train, core_test = model_selection.train_test_split(
-            X, y, core,
-            test_size=0.3, shuffle=True, random_state=seed
-        )
-
-        X_test = np.vstack([X_test, X_seperation])
-        y_test = np.append(y_test, y_seperation)
-        core_test = np.append(core_test,core_seperation)
-
-        sum(core==17)/X.shape[0]
-        sum(core_train==17)/X_train.shape[0]
-        sum(core_test==17)/X_test.shape[0]
-
-
-        # store pacific in another variable
-        # and remove 26 - 39 from test Data
-        pacific = np.arange(27,40)
-
-        pacific_data = np.where(core_test == 26)[0]
-        for core in pacific:
-            if core in core_test:
-                pacific_data = np.concatenate([pacific_data,np.where(core_test == core)[0]])
-
-        X_pacific = X_test[pacific_data,:]
-        y_pacific = y_test[pacific_data]
-
-        # store atlantic in another variable (40)
-        atlantic_data = np.where((core_test == 40) | (core_test == 41) | (core_test == 42))[0]
-        X_atlantic = X_test[atlantic_data,:]
-        y_atlantic = y_test[atlantic_data]
-
-        # store north pond in another variable (41 and 42)
-        NP_data = np.where((core_test == 43) | (core_test == 44))[0]
-        X_NP = X_test[NP_data,:]
-        y_NP = y_test[NP_data]
-
-        # store south china sea in another variable (45 up to 55)
-        SCS = np.arange(46,56)
-
-        SCS_data = np.where(core_test == 45)[0]
-        for core in SCS:
-            if core in core_test:
-                SCS_data = np.concatenate([SCS_data,np.where(core_test == core)[0]])
-
-        X_SCS = X_test[SCS_data,:]
-        y_SCS = y_test[SCS_data]
-
-        # store South Pacific Ocean in another variable (55 up to 67)
-        SPO = np.arange(56,68)
-
-        SPO_data = np.where(core_test == 55)[0]
-        for core in SPO:
-            if core in core_test:
-                SPO_data = np.concatenate([SPO_data,np.where(core_test == core)[0]])
-
-        X_SPO = X_test[SPO_data,:]
-        y_SPO = y_test[SPO_data]
-
-        # AMOR
-        AMOR = np.arange(2,26)
-        AMOR_data = np.where(core_test == 1)[0]
-
-        for core in AMOR:
-            if core in core_test:
-                AMOR_data = np.concatenate([AMOR_data,np.where(core_test == core)[0]])
-
-
-        X_AMOR = X_test[AMOR_data,:]
-        y_AMOR = y_test[AMOR_data]
-
-
-        iterations = 1000
+        # accuracy and number of samples per area over the iterations
+        results = {area: {'abs': [], 'pres': [], 'n_abs': [], 'n_pres': []} for area in results_arrays}
 
         for it in range(iterations):
+
+            # =================================
+            # ---------- SPLIT DATA -----------
+            # =================================
+            seed = 650 + it               # new, reproducible split in every iteration
+            # train / validation / test split (0.7/0.15/0.15 of the cores),
+            # stratified on area and then on core: a core is in only one set
+            train_idx, val_idx, test_idx = area_core_split(core, seed)
+
+            # core GS19GC10 (core == 17) represents the dataset the most (207 samples);
+            # remove 1/4 of its samples from the training set to reduce its weight
+            train_idx = downsample_core(train_idx, core, seed)
+
+            # select relevant features according to q-value, using the training cores only
+            feature_selection = select_features(data_fs, np.unique(core[train_idx]), var_columns,
+                                                otu_columns, seed, clr=True)
+            X = X_all[feature_selection].values.astype(float)
+
+            X_train, y_train = X[train_idx], y[train_idx]
+            X_val, y_val = X[val_idx], y[val_idx]
+            X_test, y_test, core_test = X[test_idx], y[test_idx], core[test_idx]
+
             # ===========================================
             # ---------- TRAIN AND TEST MODEL -----------
             # ===========================================
+            # max_depth is chosen on the validation cores (ccp_alpha = 0 as before)
+            dtree_sklearn = fit_tuned_tree(DecisionTreeClassifier(criterion='gini', ccp_alpha=0, random_state=seed),
+                                           X_train, y_train, X_val, y_val)
 
             # ------------------------------------
-            # Test choosen model on test dataset
+            # Accuracy per area on the test cores
             # ------------------------------------
-            print("pre training")
-            alpha = 0
-            max_dep = 500
+            for area in results:
+                sel = np.isin(core_test, AREA_CORES[area])
+                y_area = y_test[sel]
+                y_area_pred = dtree_sklearn.predict(X_test[sel]) if sel.any() else np.array([])
+                A = y_area == 0
+                P = y_area == 1
+                results[area]['abs'].append(accuracy_score(y_area[A], y_area_pred[A]) if A.any() else float('nan'))
+                results[area]['pres'].append(accuracy_score(y_area[P], y_area_pred[P]) if P.any() else float('nan'))
+                results[area]['n_abs'].append(A.sum() if A.any() else float('nan'))
+                results[area]['n_pres'].append(P.sum() if P.any() else float('nan'))
 
-            dtree_sklearn = DecisionTreeClassifier(criterion='gini', max_depth=max_dep, ccp_alpha=alpha)
-            dtree_sklearn.fit(X_train,y_train)  
-
-            print("============ Train data ============")
-            y_pred_train = dtree_sklearn.predict(X_train)
-
-            print("============ All together data ============")
-            y_pred_test = dtree_sklearn.predict(X_test)
-            print("after training")
-
-        # -------------
-        # AMOR
-        # -------------
-        print("AMOR")
-        P = np.where(y_AMOR == 1)
-        A = np.where(y_AMOR == 0)
-
-        y_AMOR_pred = dtree_sklearn.predict(X_AMOR)
-
-        if len(A[0]) > 0:
-            acc_absent = accuracy_score(y_AMOR[A], y_AMOR_pred[A])
-            accuracy_AMOR_abs[i,j] = acc_absent
-            number_AMOR_abs[i,j] = len(y_AMOR[A])
-        if len(P[0]) > 0:
-            acc_present = accuracy_score(y_AMOR[P], y_AMOR_pred[P])
-            accuracy_AMOR_pres[i,j] = acc_present
-            number_AMOR_pres[i,j] = len(y_AMOR[P])
-        
-        # -------------
-        # Atlantic (WNAG)
-        # -------------
-        print("WNAG")
-        if var == 'O2conc':
-            P = np.where(y_atlantic == 1)
-            A = np.where(y_atlantic == 0)
-
-            y_atlantic_pred = dtree_sklearn.predict(X_atlantic)
-
-            acc_absent = accuracy_score(y_atlantic[A], y_atlantic_pred[A])
-            acc_present = accuracy_score(y_atlantic[P], y_atlantic_pred[P])
-
-            accuracy_WNAG_pres[i,j] = acc_present
-            accuracy_WNAG_abs[i,j] = acc_absent
-            number_WNAG_pres[i,j] = len(y_atlantic[P])
-            number_WNAG_abs[i,j] = len(y_atlantic[A])
-
-        # -------------
-        # North Pond (MAR)
-        # -------------
-        print("MAR")
-        if (var == 'O2conc') | (var == 'NOxconc'):
-            P = np.where(y_NP == 1)
-            A = np.where(y_NP == 0)
-
-            y_NP_pred = dtree_sklearn.predict(X_NP)
-            if len(A[0]) > 0:
-                acc_absent = accuracy_score(y_NP[A], y_NP_pred[A])
-                accuracy_MAR_abs[i,j] = acc_absent
-                number_MAR_abs[i,j] = len(y_NP[A])
-            if len(P[0]) > 0:
-                acc_present = accuracy_score(y_NP[P], y_NP_pred[P])
-                accuracy_MAR_pres[i,j] = acc_present
-                number_MAR_pres[i,j] = len(y_NP[P])
-            
-        # -------------
-        # Pacific (NWPO)
-        # -------------
-        print("NWPO")
-        if (var == 'O2conc') | (var == 'NOxconc') | (var == 'NH4conc'):
-            P = np.where(y_pacific == 1)
-            A = np.where(y_pacific == 0)
-
-            y_pacific_pred = dtree_sklearn.predict(X_pacific)
-
-            if len(A[0]) > 0:
-                acc_absent = accuracy_score(y_pacific[A], y_pacific_pred[A])
-                accuracy_NWPO_abs[i,j] = acc_absent
-                number_NWPO_abs[i,j] = len(y_pacific[A])
-            if len(P[0]) > 0:
-                acc_present = accuracy_score(y_pacific[P], y_pacific_pred[P])
-                accuracy_NWPO_pres[i,j] = acc_present
-                number_NWPO_pres[i,j] = len(y_pacific[P])
-   
-        # SCS
-        # -------------
-        print("SCS")
-        P = np.where(y_SCS == 1)
-        A = np.where(y_SCS == 0)
-
-        y_SCS_pred = dtree_sklearn.predict(X_SCS)
-        if len(A[0]) > 0:
-            acc_absent = accuracy_score(y_SCS[A], y_SCS_pred[A])
-            accuracy_SCS_abs[i,j] = acc_absent
-            number_SCS_abs[i,j] = len(y_SCS[A])
-        if len(P[0]) > 0:
-            acc_present = accuracy_score(y_SCS[P], y_SCS_pred[P])
-            accuracy_SCS_pres[i,j] = acc_present
-            number_SCS_pres[i,j] = len(y_SCS[P])
-
-   
-        # SPO
-        # -------------
-        print("SPO")
-        P = np.where(y_SPO == 1)
-        A = np.where(y_SPO == 0)
-
-        y_SPO_pred = dtree_sklearn.predict(X_SPO)
-        if len(A[0]) > 0:
-            acc_absent = accuracy_score(y_SPO[A], y_SPO_pred[A])
-            accuracy_SPO_abs[i,j] = acc_absent
-            number_SPO_abs[i,j] = len(y_SPO[A])
-        if len(P[0]) > 0:
-            acc_present = accuracy_score(y_SPO[P], y_SPO_pred[P])
-            accuracy_SPO_pres[i,j] = acc_present
-            number_SPO_pres[i,j] = len(y_SPO[P])
+        # mean over the iterations
+        for area, (acc_abs, acc_pres, n_abs, n_pres) in results_arrays.items():
+            acc_abs[i,j] = nanmean_or_nan(results[area]['abs'])
+            acc_pres[i,j] = nanmean_or_nan(results[area]['pres'])
+            n_abs[i,j] = nanmean_or_nan(results[area]['n_abs'])
+            n_pres[i,j] = nanmean_or_nan(results[area]['n_pres'])
         
 # fig.delaxes(ax[2][1])
 # plt.tight_layout()
